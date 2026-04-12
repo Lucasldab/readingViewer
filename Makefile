@@ -11,7 +11,7 @@ BINDIR  ?= $(PREFIX)/bin
 all: rv rv-msg
 
 rv: rv.c
-	$(CC) $(CFLAGS) $(SDL_CFLAGS) -o $@ $< $(SDL_LIBS) -lm
+	$(CC) $(CFLAGS) $(SDL_CFLAGS) -o $@ $< $(SDL_LIBS) -lm -lpthread
 
 rv-msg: rv-msg.c
 	$(CC) $(CFLAGS) -o $@ $<
