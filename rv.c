@@ -9,6 +9,14 @@
  *   --fullscreen              start fullscreen
  *   --title <str>             window title
  *   --sock <path>             custom socket path (default: /tmp/rv-<pid>.sock)
+ *   --bind <key>=<action>     keybind (repeatable). e.g. --bind e=scroll_down
+ *
+ * Actions: scroll_down, scroll_up, fast_scroll_down, fast_scroll_up,
+ *          page_down, page_up, top, bottom, zoom_in, zoom_out, zoom_reset,
+ *          fullscreen, quit
+ *
+ * Key names: a-z, 0-9, space, escape, up, down, left, right, end,
+ *            plus, minus, equals
  */
 
 #include <SDL.h>
@@ -32,6 +40,83 @@
 #define MIN_ZOOM        0.1
 #define MAX_ZOOM        5.0
 #define SOCK_PATH_MAX   (sizeof(((struct sockaddr_un *)0)->sun_path))
+#define MAX_BINDS       64
+
+/* ---------- actions ---------- */
+
+enum action {
+    ACT_NONE = 0,
+    ACT_SCROLL_DOWN,
+    ACT_SCROLL_UP,
+    ACT_FAST_SCROLL_DOWN,
+    ACT_FAST_SCROLL_UP,
+    ACT_PAGE_DOWN,
+    ACT_PAGE_UP,
+    ACT_TOP,
+    ACT_BOTTOM,
+    ACT_ZOOM_IN,
+    ACT_ZOOM_OUT,
+    ACT_ZOOM_RESET,
+    ACT_FULLSCREEN,
+    ACT_QUIT,
+};
+
+static const struct { const char *name; enum action act; } action_map[] = {
+    { "scroll_down",      ACT_SCROLL_DOWN },
+    { "scroll_up",        ACT_SCROLL_UP },
+    { "fast_scroll_down", ACT_FAST_SCROLL_DOWN },
+    { "fast_scroll_up",   ACT_FAST_SCROLL_UP },
+    { "page_down",        ACT_PAGE_DOWN },
+    { "page_up",          ACT_PAGE_UP },
+    { "top",              ACT_TOP },
+    { "bottom",           ACT_BOTTOM },
+    { "zoom_in",          ACT_ZOOM_IN },
+    { "zoom_out",         ACT_ZOOM_OUT },
+    { "zoom_reset",       ACT_ZOOM_RESET },
+    { "fullscreen",       ACT_FULLSCREEN },
+    { "quit",             ACT_QUIT },
+    { NULL, ACT_NONE },
+};
+
+static enum action parse_action(const char *name)
+{
+    for (int i = 0; action_map[i].name; i++)
+        if (strcmp(action_map[i].name, name) == 0)
+            return action_map[i].act;
+    return ACT_NONE;
+}
+
+/* ---------- key name lookup ---------- */
+
+static const struct { const char *name; SDL_Keycode key; } key_map[] = {
+    { "space",  SDLK_SPACE },  { "escape", SDLK_ESCAPE },
+    { "up",     SDLK_UP },     { "down",   SDLK_DOWN },
+    { "left",   SDLK_LEFT },   { "right",  SDLK_RIGHT },
+    { "end",    SDLK_END },    { "home",   SDLK_HOME },
+    { "plus",   SDLK_PLUS },   { "minus",  SDLK_MINUS },
+    { "equals", SDLK_EQUALS },
+    { NULL, 0 },
+};
+
+static SDL_Keycode parse_key(const char *name)
+{
+    /* single character */
+    if (name[0] && !name[1])
+        return (SDL_Keycode)name[0];
+
+    for (int i = 0; key_map[i].name; i++)
+        if (strcmp(key_map[i].name, name) == 0)
+            return key_map[i].key;
+
+    return SDLK_UNKNOWN;
+}
+
+/* ---------- keybind entry ---------- */
+
+typedef struct {
+    SDL_Keycode    key;
+    enum action    act;
+} Keybind;
 
 /* ---------- image entry ---------- */
 
@@ -66,7 +151,79 @@ static struct {
 
     int              quit;
     int              needs_layout;
+
+    Keybind          binds[MAX_BINDS];
+    int              nbinds;
 } V;
+
+/* ---------- keybind helpers ---------- */
+
+static void bind_key(SDL_Keycode key, enum action act)
+{
+    /* overwrite existing bind for this key */
+    for (int i = 0; i < V.nbinds; i++) {
+        if (V.binds[i].key == key) {
+            V.binds[i].act = act;
+            return;
+        }
+    }
+    if (V.nbinds < MAX_BINDS) {
+        V.binds[V.nbinds].key = key;
+        V.binds[V.nbinds].act = act;
+        V.nbinds++;
+    }
+}
+
+static int parse_bind_arg(const char *arg)
+{
+    char buf[256];
+    snprintf(buf, sizeof(buf), "%s", arg);
+    char *eq = strchr(buf, '=');
+    if (!eq) return -1;
+    *eq = '\0';
+    const char *keyname = buf;
+    const char *actname = eq + 1;
+
+    SDL_Keycode key = parse_key(keyname);
+    if (key == SDLK_UNKNOWN) {
+        fprintf(stderr, "rv: unknown key: %s\n", keyname);
+        return -1;
+    }
+    enum action act = parse_action(actname);
+    if (act == ACT_NONE) {
+        fprintf(stderr, "rv: unknown action: %s\n", actname);
+        return -1;
+    }
+    bind_key(key, act);
+    return 0;
+}
+
+static void default_binds(void)
+{
+    bind_key(SDLK_j,       ACT_SCROLL_DOWN);
+    bind_key(SDLK_DOWN,    ACT_SCROLL_DOWN);
+    bind_key(SDLK_k,       ACT_SCROLL_UP);
+    bind_key(SDLK_UP,      ACT_SCROLL_UP);
+    bind_key(SDLK_SPACE,   ACT_PAGE_DOWN);
+    bind_key(SDLK_b,       ACT_PAGE_UP);
+    bind_key(SDLK_g,       ACT_TOP);
+    bind_key(SDLK_END,     ACT_BOTTOM);
+    bind_key(SDLK_PLUS,    ACT_ZOOM_IN);
+    bind_key(SDLK_EQUALS,  ACT_ZOOM_IN);
+    bind_key(SDLK_MINUS,   ACT_ZOOM_OUT);
+    bind_key(SDLK_0,       ACT_ZOOM_RESET);
+    bind_key(SDLK_f,       ACT_FULLSCREEN);
+    bind_key(SDLK_q,       ACT_QUIT);
+    bind_key(SDLK_ESCAPE,  ACT_QUIT);
+}
+
+static enum action lookup_bind(SDL_Keycode key)
+{
+    for (int i = 0; i < V.nbinds; i++)
+        if (V.binds[i].key == key)
+            return V.binds[i].act;
+    return ACT_NONE;
+}
 
 /* ---------- forward declarations ---------- */
 
@@ -289,61 +446,68 @@ static void handle_event(SDL_Event *e)
         break;
 
     case SDL_KEYDOWN: {
+        enum action act = lookup_bind(e->key.keysym.sym);
         int shift = (e->key.keysym.mod & KMOD_SHIFT) != 0;
-        int speed = shift ? V.fast_scroll_speed : V.scroll_speed;
 
-        switch (e->key.keysym.sym) {
-        case SDLK_q:
-        case SDLK_ESCAPE:
+        /* shift upgrades scroll to fast_scroll */
+        if (shift && act == ACT_SCROLL_DOWN) act = ACT_FAST_SCROLL_DOWN;
+        if (shift && act == ACT_SCROLL_UP)   act = ACT_FAST_SCROLL_UP;
+
+        switch (act) {
+        case ACT_QUIT:
             V.quit = 1;
             break;
-        case SDLK_j:
-        case SDLK_DOWN:
-            V.scroll_target += speed;
+        case ACT_SCROLL_DOWN:
+            V.scroll_target += V.scroll_speed;
             clamp_scroll();
             break;
-        case SDLK_k:
-        case SDLK_UP:
-            V.scroll_target -= speed;
+        case ACT_SCROLL_UP:
+            V.scroll_target -= V.scroll_speed;
             clamp_scroll();
             break;
-        case SDLK_SPACE:
-            /* page down */
+        case ACT_FAST_SCROLL_DOWN:
+            V.scroll_target += V.fast_scroll_speed;
+            clamp_scroll();
+            break;
+        case ACT_FAST_SCROLL_UP:
+            V.scroll_target -= V.fast_scroll_speed;
+            clamp_scroll();
+            break;
+        case ACT_PAGE_DOWN:
             V.scroll_target += V.win_h / V.zoom * 0.9;
             clamp_scroll();
             break;
-        case SDLK_b:
-            /* page up */
+        case ACT_PAGE_UP:
             V.scroll_target -= V.win_h / V.zoom * 0.9;
             clamp_scroll();
             break;
-        case SDLK_g:
-            /* home */
+        case ACT_TOP:
             V.scroll_target = 0;
             break;
-        case SDLK_END:
+        case ACT_BOTTOM:
             V.scroll_target = V.total_h;
             clamp_scroll();
             break;
-        case SDLK_PLUS:
-        case SDLK_EQUALS:
+        case ACT_ZOOM_IN:
             V.zoom += ZOOM_STEP;
             if (V.zoom > MAX_ZOOM) V.zoom = MAX_ZOOM;
             V.needs_layout = 1;
             break;
-        case SDLK_MINUS:
+        case ACT_ZOOM_OUT:
             V.zoom -= ZOOM_STEP;
             if (V.zoom < MIN_ZOOM) V.zoom = MIN_ZOOM;
             V.needs_layout = 1;
             break;
-        case SDLK_0:
+        case ACT_ZOOM_RESET:
             V.zoom = 1.0;
             V.needs_layout = 1;
             break;
-        case SDLK_f:
+        case ACT_FULLSCREEN:
             V.fullscreen = !V.fullscreen;
             SDL_SetWindowFullscreen(V.win,
                 V.fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
+            break;
+        case ACT_NONE:
             break;
         }
         break;
@@ -396,6 +560,7 @@ int main(int argc, char **argv)
     V.fullscreen        = 0;
     V.sock_fd           = -1;
     V.needs_layout      = 1;
+    default_binds();
     snprintf(V.title, sizeof(V.title), "rv");
     snprintf(V.sock_path, sizeof(V.sock_path), "/tmp/rv-%d.sock", getpid());
 
@@ -412,6 +577,9 @@ int main(int argc, char **argv)
             snprintf(V.title, sizeof(V.title), "%s", argv[++i]);
         } else if (strcmp(argv[i], "--sock") == 0 && i + 1 < argc) {
             snprintf(V.sock_path, sizeof(V.sock_path), "%s", argv[++i]);
+        } else if (strcmp(argv[i], "--bind") == 0 && i + 1 < argc) {
+            if (parse_bind_arg(argv[++i]) < 0)
+                return 1;
         } else if (argv[i][0] == '-') {
             fprintf(stderr, "rv: unknown option: %s\n", argv[i]);
             return 1;
