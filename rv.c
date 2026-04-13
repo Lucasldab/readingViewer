@@ -916,6 +916,8 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "1");
+
     V.ren = SDL_CreateRenderer(V.win, -1,
         SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
     if (!V.ren) {
