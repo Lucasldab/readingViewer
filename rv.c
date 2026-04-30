@@ -374,6 +374,14 @@ static int add_image(const char *path)
     return idx;
 }
 
+/* fit image to window width without upscaling past native size */
+static double fit_scale(int img_w)
+{
+    if (img_w <= 0) return 1.0;
+    double s = (double)V.win_w / img_w;
+    return s > 1.0 ? 1.0 : s;
+}
+
 /* ---------- texture streaming ---------- */
 
 static void manage_textures(void)
@@ -404,7 +412,7 @@ static void manage_textures(void)
         if (img->state == IMG_LOADING || img->state == IMG_EMPTY || img->state == IMG_ERROR)
             continue;
 
-        double scale = (img->w > 0) ? (double)V.win_w / img->w : 1.0;
+        double scale = fit_scale(img->w);
         int scaled_h = (int)(img->h * scale);
         double img_top = img->y_offset;
         double img_bot = img->y_offset + scaled_h;
@@ -439,7 +447,7 @@ static void manage_textures(void)
         if (img->state != IMG_EMPTY || !img->path)
             continue;
 
-        double scale = (img->w > 0) ? (double)V.win_w / img->w : 1.0;
+        double scale = fit_scale(img->w);
         int scaled_h = (int)(img->h * scale);
         double img_top = img->y_offset;
         double img_bot = img->y_offset + scaled_h;
@@ -465,7 +473,7 @@ static void layout(void)
         int w = V.images[i].w;
         int h = V.images[i].h;
         if (w > 0 && h > 0) {
-            double scale = (double)V.win_w / w;
+            double scale = fit_scale(w);
             y += (int)(h * scale);
         } else {
             /* placeholder height for loading images */
@@ -508,7 +516,7 @@ static void render(void)
         Image *img = &V.images[i];
         int w = img->w > 0 ? img->w : V.win_w;
         int h = img->h > 0 ? img->h : V.win_h / 2;
-        double scale = (double)V.win_w / w;
+        double scale = fit_scale(w);
         int scaled_w = (int)(w * scale * V.zoom);
         int scaled_h = (int)(h * scale * V.zoom);
         int y = (int)(img->y_offset * V.zoom - zy);
@@ -889,6 +897,12 @@ int main(int argc, char **argv)
         }
     }
 
+    /* Set app id/WM class before SDL_Init so Wayland/X11 tools can match the
+     * window (hyprctl, window rules, etc). */
+    SDL_SetHint("SDL_APP_ID", "rv");
+    SDL_SetHint("SDL_VIDEO_WAYLAND_WMCLASS", "rv");
+    SDL_SetHint("SDL_VIDEO_X11_WMCLASS", "rv");
+
     /* init SDL */
     if (SDL_Init(SDL_INIT_VIDEO) < 0) {
         fprintf(stderr, "rv: SDL_Init failed: %s\n", SDL_GetError());
@@ -902,10 +916,12 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    /* Create the window windowed first. On Wayland/xdg-shell, requesting
+     * fullscreen at creation (or before the first configure lands) can be
+     * silently dropped by the compositor (observed on Hyprland). We wait for
+     * the window to actually be exposed, then request fullscreen — at that
+     * point xdg_toplevel is fully mapped and set_fullscreen is honored. */
     Uint32 win_flags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_SHOWN;
-    if (V.fullscreen)
-        win_flags |= SDL_WINDOW_FULLSCREEN_DESKTOP;
-
     V.win = SDL_CreateWindow(V.title,
         SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
         800, 900, win_flags);
@@ -914,6 +930,22 @@ int main(int argc, char **argv)
         IMG_Quit();
         SDL_Quit();
         return 1;
+    }
+
+    if (V.fullscreen) {
+        SDL_Event ev;
+        int exposed = 0;
+        Uint32 start = SDL_GetTicks();
+        while (!exposed && SDL_GetTicks() - start < 500) {
+            if (SDL_WaitEventTimeout(&ev, 50)) {
+                if (ev.type == SDL_WINDOWEVENT &&
+                    (ev.window.event == SDL_WINDOWEVENT_EXPOSED ||
+                     ev.window.event == SDL_WINDOWEVENT_SHOWN)) {
+                    exposed = 1;
+                }
+            }
+        }
+        SDL_SetWindowFullscreen(V.win, SDL_WINDOW_FULLSCREEN_DESKTOP);
     }
 
     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "1");
